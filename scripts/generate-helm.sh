@@ -5,10 +5,14 @@ CHART_NAME="zkwasm-automata"
 CHAIN_ID="11155111" # Default to Sepolia testnet
 ALLOWED_ORIGINS="*" # Multiple domains separated by commas
 CHART_PATH="./helm-charts/${CHART_NAME}"
-DEPLOY_VALUE="true" 
-REMOTE_VALUE="true" 
+DEPLOY_VALUE="TRUE" 
+REMOTE_VALUE="TRUE" 
 AUTO_SUBMIT_VALUE="" # Default to empty
-IMAGE_VALUE="7CE57C1529F87BB130E3DCDD4E44E6DE" # MD5 value of the image, will be automatically filled in by the running the Makefile
+MIGRATE_VALUE="FALSE" # Default to false
+MIGRATE_IMAGE_VALUE="" # MD5 value of the intended image to migrate
+IMAGE_VALUE="" # MD5 value of the image
+SETTLEMENT_CONTRACT_ADDRESS="" # Default to empty
+RPC_PROVIDER="" # Default to empty
 
 echo "Using IMAGE_VALUE: ${IMAGE_VALUE}"
 
@@ -78,6 +82,11 @@ ingress:
   annotations:
     kubernetes.io/ingress.class: nginx
     cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "180"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "180"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "180"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
   tls:
     enabled: true
   domain:
@@ -96,7 +105,10 @@ config:
     deploy: "${DEPLOY_VALUE}"
     remote: "${REMOTE_VALUE}"
     autoSubmit: "${AUTO_SUBMIT_VALUE}"
+    migrate: "${MIGRATE_VALUE}"
     image: "${IMAGE_VALUE}"
+    settlementContractAddress: "${SETTLEMENT_CONTRACT_ADDRESS}"
+    rpcProvider: "${RPC_PROVIDER}"
   mongodb:
     enabled: true
     image:
@@ -111,20 +123,20 @@ config:
     enabled: true
     image:
       repository: redis
-      tag: latest
+      tag: 7.4.2
     port: 6379
     resources:
       requests:
-        memory: "128Mi"
-        cpu: "100m"
+        memory: "1Gi"
+        cpu: "250m"
       limits:
-        memory: "256Mi"
-        cpu: "200m"
+        memory: "2Gi"
+        cpu: "500m"
   merkle:
     enabled: true
     image:
       repository: sinka2022/zkwasm-merkleservice
-      tag: latest
+      tag: v1
     port: 3030
 
 service:
@@ -139,10 +151,10 @@ initContainer:
 resources:
   limits:
     cpu: 1000m
-    memory: 1Gi
+    memory: 2Gi
   requests:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 500m
+    memory: 1Gi
 
 nodeSelector: {}
 tolerations: []
@@ -196,13 +208,19 @@ spec:
               name: app-secrets
               key: USER_PRIVATE_ACCOUNT
         - name: DEPLOY
-          value: "{{ .Values.config.app.deploy | default "true" }}"
+          value: "{{ .Values.config.app.deploy | default "" }}"
         - name: REMOTE
-          value: "{{ .Values.config.app.remote | default "true" }}"
+          value: "{{ .Values.config.app.remote | default "" }}"
         - name: AUTO_SUBMIT
           value: "{{ .Values.config.app.autoSubmit | default "" }}"
+        - name: MIGRATE
+          value: "{{ .Values.config.app.migrate | default "" }}"
         - name: IMAGE
           value: "{{ .Values.config.app.image | default "" }}"
+        - name: SETTLEMENT_CONTRACT_ADDRESS
+          value: "{{ .Values.config.app.settlementContractAddress | default "" }}"
+        - name: RPC_PROVIDER
+          value: "{{ .Values.config.app.rpcProvider | default "" }}"
         ports:
         - containerPort: 3000
           name: http
@@ -489,7 +507,19 @@ else
   echo "No .env file found"
 fi
 
-node ./node_modules/zkwasm-service-cli/dist/index.js addimage -r "https://rpc.zkwasmhub.com:8090" -p "./node_modules/zkwasm-ts-server/src/application/application_bg.wasm" -u "\${USER_ADDRESS}" -x "\${USER_PRIVATE_ACCOUNT}" -d "Multi User App" -c 22 --auto_submit_network_ids ${CHAIN_ID} -n "${CHART_NAME}" --creator_only_add_prove_task true
+PUBLISH_CMD="node ./node_modules/zkwasm-service-cli/dist/index.js addimage -r \"https://rpc.zkwasmhub.com:8090\" -p \"./node_modules/zkwasm-ts-server/src/application/application_bg.wasm\" -u \"\${USER_ADDRESS}\" -x \"\${USER_PRIVATE_ACCOUNT}\" -d \"Multi User App\" -c 22 --auto_submit_network_ids ${CHAIN_ID} -n \"${CHART_NAME}\" --creator_only_add_prove_task true"
+
+if [ "${MIGRATE_VALUE}" = "TRUE" ] || [ "${MIGRATE_VALUE}" = "true" ]; then
+  if [ -n "${MIGRATE_IMAGE_VALUE}" ]; then
+    echo "Migration enabled, adding import_data_image parameter with value: ${MIGRATE_IMAGE_VALUE}"
+    PUBLISH_CMD="\${PUBLISH_CMD} --import_data_image ${MIGRATE_IMAGE_VALUE}"
+  else
+    echo "Warning: Migration is enabled but MIGRATE_IMAGE_VALUE is not set"
+  fi
+fi
+
+# 执行命令
+eval \${PUBLISH_CMD}
 EOL
 
 chmod +x ts/publish.sh
